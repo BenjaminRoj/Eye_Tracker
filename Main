@@ -1,6 +1,10 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import pyautogui
+
+smoothed_cursor = None
+alpha = 0.2  # Cuanto más bajo, más suave pero más lento reacciona
 
 # Inicializar MediaPipe FaceMesh
 mp_face_mesh = mp.solutions.face_mesh
@@ -102,7 +106,24 @@ while cap.isOpened():
         eye_pos = get_iris_center(landmarks_detected, w, h)
         if eye_pos:
             predicted = estimate_cursor_position(eye_pos)
-            cv2.circle(frame, predicted, 10, (0, 0, 255), -1)
+            if smoothed_cursor is None:
+                smoothed_cursor = predicted
+            else:
+                smoothed_cursor = (
+                    int((1 - alpha) * smoothed_cursor[0] + alpha * predicted[0]),
+                    int((1 - alpha) * smoothed_cursor[1] + alpha * predicted[1])
+                )
+            
+            # Dibujar puntero suavizado
+            cv2.circle(frame, smoothed_cursor, 10, (0, 0, 255), -1)
+            
+            # Mover mouse real a posición estimada (escalada)
+            screen_w, screen_h = pyautogui.size()
+            mouse_x = int(smoothed_cursor[0] / w * screen_w)
+            mouse_y = int(smoothed_cursor[1] / h * screen_h)
+            pyautogui.moveTo(mouse_x, mouse_y, duration=0)
+
+
 
     # Dibujar los puntos del iris (para depurar)
     if landmarks_detected and len(landmarks_detected) >= 478:
