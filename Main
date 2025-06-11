@@ -1,0 +1,123 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+
+# Inicializar MediaPipe FaceMesh
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
+
+# Índices del iris
+LEFT_IRIS = [468, 469, 470, 471, 472]
+RIGHT_IRIS = [473, 474, 475, 476, 477]
+
+# Calibración
+calibration_screen = []
+calibration_eye = []
+calibrating = True
+frame_size = (640, 480)
+landmarks_detected = None
+
+# Obtener targets de calibración en pantalla
+def get_calibration_targets(w, h):
+    return [
+        (int(0.1 * w), int(0.1 * h)),
+        (int(0.5 * w), int(0.1 * h)),
+        (int(0.9 * w), int(0.1 * h)),
+        (int(0.1 * w), int(0.5 * h)),
+        (int(0.9 * w), int(0.5 * h)),
+        (int(0.1 * w), int(0.9 * h)),
+        (int(0.5 * w), int(0.9 * h)),
+        (int(0.9 * w), int(0.9 * h)),
+    ]
+
+# Calcular centro promedio de iris izquierdo y derecho
+def get_iris_center(landmarks, w, h):
+    if len(landmarks) < 478:
+        return None
+    def mean_pos(indices):
+        xs = [landmarks[i].x * w for i in indices]
+        ys = [landmarks[i].y * h for i in indices]
+        return (sum(xs)/len(xs), sum(ys)/len(ys))
+    left = mean_pos(LEFT_IRIS)
+    right = mean_pos(RIGHT_IRIS)
+    return ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2)
+
+# Estimar posición del cursor desde el ojo usando regresión lineal
+def estimate_cursor_position(eye_pos):
+    if len(calibration_eye) < 8:
+        return (0, 0)
+    A = np.array(calibration_eye)
+    B = np.array(calibration_screen)
+    A_aug = np.hstack([A, np.ones((A.shape[0], 1))])
+    coeffs, _, _, _ = np.linalg.lstsq(A_aug, B, rcond=None)
+    eye_aug = np.array([eye_pos[0], eye_pos[1], 1])
+    return tuple((eye_aug @ coeffs).astype(int))
+
+# Click para calibrar
+def mouse_callback(event, x, y, flags, param):
+    global calibrating, calibration_eye, calibration_screen
+    if event == cv2.EVENT_LBUTTONDOWN and calibrating and landmarks_detected:
+        eye_pos = get_iris_center(landmarks_detected, frame_size[0], frame_size[1])
+        if eye_pos is None:
+            print("❌ No se detectó iris. Intenta nuevamente.")
+            return
+        for tx, ty in calibration_targets:
+            if abs(x - tx) < 20 and abs(y - ty) < 20:
+                calibration_eye.append(eye_pos)
+                calibration_screen.append((tx, ty))
+                print(f"✅ Punto calibrado: pantalla {tx, ty} ↔ iris {eye_pos}")
+                if len(calibration_eye) == 8:
+                    calibrating = False
+                break
+
+# Captura
+cap = cv2.VideoCapture(0)
+ret, frame = cap.read()
+frame_size = (frame.shape[1], frame.shape[0])
+calibration_targets = get_calibration_targets(*frame_size)
+
+cv2.namedWindow("Eye Tracker", cv2.WINDOW_NORMAL)
+cv2.setWindowProperty("Eye Tracker", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+cv2.setMouseCallback("Eye Tracker", mouse_callback)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame = cv2.flip(frame, 1)
+    h, w, _ = frame.shape
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    result = face_mesh.process(rgb)
+
+    if result.multi_face_landmarks:
+        landmarks_detected = result.multi_face_landmarks[0].landmark
+
+    # Dibujar puntos de calibración
+    for pt in calibration_targets:
+        cv2.circle(frame, pt, 10, (0, 255, 255), -1)
+
+    # Mostrar estimación de mirada
+    if not calibrating and landmarks_detected:
+        eye_pos = get_iris_center(landmarks_detected, w, h)
+        if eye_pos:
+            predicted = estimate_cursor_position(eye_pos)
+            cv2.circle(frame, predicted, 10, (0, 0, 255), -1)
+
+    # Dibujar los puntos del iris (para depurar)
+    if landmarks_detected and len(landmarks_detected) >= 478:
+        for i in LEFT_IRIS + RIGHT_IRIS:
+            pt = landmarks_detected[i]
+            cx, cy = int(pt.x * w), int(pt.y * h)
+            cv2.circle(frame, (cx, cy), 1, (0, 255, 0), -1)
+
+    if calibrating:
+        cv2.putText(frame, "Haz clic sobre los puntos amarillos para calibrar (8 en total)", (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    cv2.imshow("Eye Tracker", frame)
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
